@@ -2,6 +2,8 @@
 
 #Set-ExecutionPolicy -ExecutionPolicy Undefined -Scope CurrentUser
 
+#Right click script property to unlock before execution
+
 
 
 
@@ -9,7 +11,7 @@
 
 #存以下script為configure_security.ps1
 #用admin執行
-.\configure_security.ps1
+#.\configure_security.ps1
 
 # PowerShell script to disable USB storage, enforce password policies, enable automatic updates, and screen saver.
 
