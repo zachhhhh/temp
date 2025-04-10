@@ -2,29 +2,28 @@
 
 <#
 .SYNOPSIS
-Configures security and preference settings on Windows 11 Home, optionally enforcing password changes.
+在 Windows 11 家用版上設定安全性和喜好設定，並可選擇強制變更密碼。
 .DESCRIPTION
-This script attempts to configure the following on Windows 11 Home:
-- Disable USB mass storage devices (System-wide).
-- Set basic password policies using 'net accounts' (System-wide, limited options on Home).
-- Optionally flags all standard local users to change their password at next logon.
-- Configure screen saver settings for the *current user* running the script.
+此腳本嘗試在 Windows 11 家用版上進行以下設定：
+- 停用 USB 大量儲存裝置（系統範圍）。
+- 使用 'net accounts' 設定基本密碼原則（系統範圍，家用版選項有限）。
+- 可選擇性地標記所有標準本機使用者在下次登入時變更密碼。
+- 為執行腳本的*目前使用者*設定螢幕保護裝置。
 .NOTES
-Version: 1.6
-Author: Gemini AI (Modified from user input)
-Date: 2025-04-10
+版本: 1.7
+作者: Gemini AI (根據使用者輸入修改)
+日期: 2025-04-10
 
-IMPORTANT: It's recommended to save this script file with UTF-8 with BOM encoding if using non-English characters in comments or strings.
+重要提示: 如果要在註解或字串中使用非英文字元，建議將此腳本檔案儲存為 UTF-8 with BOM 編碼。
 
-IMPORTANT WINDOWS HOME LIMITATIONS:
-- Full password policies (like complexity) cannot be enforced via script on Windows Home.
-- Group Policy registry keys (like those for Automatic Updates) are not reliably supported on Windows Home.
-- Settings applied to HKCU (Screen Saver) only affect the user running the script.
-- Forced password change flags ALL non-built-in-admin users, regardless of current password compliance.
-- Requires PowerShell 5.1+ for Get-LocalUser cmdlet.
+重要的 WINDOWS 家用版限制:
+- 無法透過腳本在家用版上強制執行完整的密碼原則（例如複雜性）。
+- 透過登錄檔設定群組原則機碼（例如自動更新的機碼）在家用版上不保證可靠。
+- 套用至 HKCU 的設定（螢幕保護裝置）僅影響執行腳本的使用者。
+- 強制變更密碼會標記所有非內建系統管理員的使用者，無論其目前密碼是否符合規定。
 #>
 
-# --- Configuration Variables ---
+# --- 設定變數 ---
 [CmdletBinding()]
 param (
     [Parameter(Mandatory=$false)]
@@ -37,127 +36,122 @@ param (
     [int]$MaxPasswordAge = 90,
 
     [Parameter(Mandatory=$false)]
-    [int]$ScreenSaverTimeoutSeconds = 600, # 10 minutes
+    [int]$ScreenSaverTimeoutSeconds = 600, # 10 分鐘
 
     [Parameter(Mandatory=$false)]
     [string]$ScreenSaverExecutable = "$($env:SystemRoot)\System32\scrnsave.scr",
 
     [Parameter(Mandatory=$false)]
-    [bool]$EnforcePasswordChangeOnNonAdmins = $true # Set to $false to disable forced change
+    [bool]$EnforcePasswordChangeOnNonAdmins = $true # 設定為 $false 以停用強制變更
 )
 
 # =============================================
-# --- Configuration Section ---
+# --- 設定區段 ---
 # =============================================
-Write-Host "Starting configuration script..." -ForegroundColor Yellow
-Write-Host "Running as user: $($env:USERNAME)" -ForegroundColor Gray
-Write-Host "System Time: $(Get-Date)" -ForegroundColor Gray
-Write-Host "System Culture: $(Get-Culture).Name" -ForegroundColor Gray
+Write-Host "正在開始設定腳本..." -ForegroundColor Yellow
+Write-Host "執行身分: $($env:USERNAME)" -ForegroundColor Gray
+Write-Host "系統時間: $(Get-Date)" -ForegroundColor Gray
+Write-Host "系統文化特性: $(Get-Culture).Name" -ForegroundColor Gray
 
-# --- Disable USB Storage ---
-Write-Host "`nConfiguring USB storage..."
+# --- 停用 USB 儲存裝置 ---
+Write-Host "`n正在設定 USB 儲存裝置..."
 $usbStorPath = "HKLM:\SYSTEM\CurrentControlSet\Services\UsbStor"
-$expectedUsbStorStartValue = if ($DisableUsbStorage) { 4 } else { 3 } # 4 = Disabled, 3 = Enabled (Manual Start)
+$expectedUsbStorStartValue = if ($DisableUsbStorage) { 4 } else { 3 } # 4 = 停用, 3 = 啟用 (手動啟動)
 
 try {
     if (!(Test-Path $usbStorPath)) {
-        Write-Warning "USB Storage registry path not found: $usbStorPath. Skipping configuration."
+        Write-Warning "找不到 USB 儲存裝置登錄路徑: $usbStorPath。正在跳過設定。"
     } else {
         Set-ItemProperty -Path $usbStorPath -Name Start -Value $expectedUsbStorStartValue -ErrorAction Stop
         if ($DisableUsbStorage) {
-            Write-Host "USB storage driver disabled (System-wide)." -ForegroundColor Green
+            Write-Host "USB 儲存裝置驅動程式已停用 (系統範圍)。" -ForegroundColor Green
         } else {
-            Write-Host "USB storage driver set to enabled/manual start (System-wide)." -ForegroundColor Green
+            Write-Host "USB 儲存裝置驅動程式已設為啟用/手動啟動 (系統範圍)。" -ForegroundColor Green
         }
     }
 } catch {
-    Write-Error "Failed to configure USB storage. Error: $($_.Exception.Message)"
+    Write-Error "設定 USB 儲存裝置失敗。錯誤: $($_.Exception.Message)"
 }
 
 
-# --- Password Policies (Using net accounts - Limited for Windows Home) ---
-Write-Host "`nConfiguring password policies using 'net accounts'..."
-Write-Host "Note: Password complexity cannot be enforced via 'net accounts' on Windows Home." -ForegroundColor Yellow
+# --- 密碼原則 (使用 net accounts - 家用版有限) ---
+Write-Host "`n正在使用 'net accounts' 設定密碼原則..."
+Write-Host "注意: 無法在家用版上透過 'net accounts' 強制執行密碼複雜性。" -ForegroundColor Yellow
 
-# Minimum Password Length
+# 最小密碼長度
 try {
-    Write-Verbose "Setting Minimum Password Length to $MinPasswordLength"
+    Write-Verbose "正在設定最小密碼長度為 $MinPasswordLength"
     net accounts /minpwlen:$MinPasswordLength
-    if ($lasterrorcode -ne 0) { # Check exit code
-         Write-Warning "Command 'net accounts /minpwlen' may have encountered an issue (Exit code: $lasterrorcode)."
+    if ($lasterrorcode -ne 0) { # 檢查結束代碼
+         Write-Warning "指令 'net accounts /minpwlen' 可能遇到問題 (結束代碼: $lasterrorcode)。"
     } else {
-         Write-Host "Attempted to set Minimum password length to: $MinPasswordLength (System-wide)." -ForegroundColor Green
+         Write-Host "已嘗試設定最小密碼長度為: $MinPasswordLength (系統範圍)。" -ForegroundColor Green
     }
 } catch {
-    Write-Error "Failed to run 'net accounts' for Minimum Password Length. Error: $($_.Exception.Message)"
+    Write-Error "執行 'net accounts' 設定最小密碼長度失敗。錯誤: $($_.Exception.Message)"
 }
 
-# Maximum Password Age
+# 最長密碼有效期
 try {
-    Write-Verbose "Setting Maximum Password Age to $MaxPasswordAge days"
+    Write-Verbose "正在設定最長密碼有效期為 $MaxPasswordAge 天"
     net accounts /maxpwage:$MaxPasswordAge
-    if ($lasterrorcode -ne 0) { # Check exit code
-        Write-Warning "Command 'net accounts /maxpwage' may have encountered an issue (Exit code: $lasterrorcode)."
+    if ($lasterrorcode -ne 0) { # 檢查結束代碼
+        Write-Warning "指令 'net accounts /maxpwage' 可能遇到問題 (結束代碼: $lasterrorcode)。"
     } else {
-        Write-Host "Attempted to set Maximum password age to: $MaxPasswordAge days (System-wide)." -ForegroundColor Green
+        Write-Host "已嘗試設定最長密碼有效期為: $MaxPasswordAge 天 (系統範圍)。" -ForegroundColor Green
     }
 } catch {
-    Write-Error "Failed to run 'net accounts' for Maximum Password Age. Error: $($_.Exception.Message)"
+    Write-Error "執行 'net accounts' 設定最長密碼有效期失敗。錯誤: $($_.Exception.Message)"
 }
 
-# --- Force Password Change for Non-Admins (Optional) ---
+# --- 強制非系統管理員變更密碼 (可選) ---
 if ($EnforcePasswordChangeOnNonAdmins) {
-    Write-Host "`nAttempting to flag non-administrator users for password change at next logon..." -ForegroundColor Yellow
-    Write-Host "WARNING: This affects ALL enabled local users except the built-in Administrator (SID ending -500)." -ForegroundColor Yellow
+    Write-Host "`n正在嘗試標記非系統管理員使用者於下次登入時變更密碼..." -ForegroundColor Yellow
+    Write-Host "警告: 這將影響所有已啟用的本機使用者，除了內建的 Administrator (SID 結尾為 -500)。" -ForegroundColor Yellow
 
     try {
-        # Get enabled local users, excluding the built-in administrator account (SID typically ends in -500)
-        $usersToFlag = Get-LocalUser -PrincipalSource Local | Where-Object { $_.Enabled -eq $true -and $_.SID.Value -notlike 'S-1-5-*-500' } -ErrorAction Stop
+        # 使用 Get-CimInstance 取得已啟用且非內建 Administrator 的本機帳戶
+        $usersToFlag = Get-CimInstance -ClassName Win32_UserAccount -Filter "LocalAccount=True" | Where-Object { $_.Disabled -eq $false -and $_.SID -notlike 'S-1-5-*-500' } -ErrorAction Stop
 
         if ($null -eq $usersToFlag -or $usersToFlag.Count -eq 0) {
-             Write-Host "No applicable user accounts found to flag for password change." -ForegroundColor Green
+             Write-Host "找不到適用的使用者帳戶來標記變更密碼。" -ForegroundColor Green
         } else {
-            # Ensure $usersToFlag is an array even if only one user is found
+            # 確保 $usersToFlag 是陣列，即使只找到一個使用者
             if ($usersToFlag -isnot [array]) { $usersToFlag = @($usersToFlag) }
 
             foreach ($user in $usersToFlag) {
-                Write-Host "  Attempting to flag user: $($user.Name)"
+                Write-Host "  正在嘗試標記使用者: $($user.Name)"
                 try {
-                    # Use net user to force password change at next logon
-                    # Enclose username in quotes in case it contains spaces
+                    # 使用 net user 強制在下次登入時變更密碼
+                    # 如果使用者名稱包含空格，則在名稱周圍加上引號
                     net user "$($user.Name)" /logonpasswordchg:yes
                     if ($lasterrorcode -eq 0) {
-                        Write-Host "    [SUCCESS] User '$($user.Name)' flagged to change password at next logon." -ForegroundColor Green
+                        Write-Host "    [成功] 使用者 '$($user.Name)' 已被標記在下次登入時變更密碼。" -ForegroundColor Green
                     } else {
-                         Write-Warning "    [WARN] Command 'net user ""$($user.Name)"" /logonpasswordchg:yes' finished with exit code $lasterrorcode. May not have succeeded."
+                         Write-Warning "    [警告] 指令 'net user ""$($user.Name)"" /logonpasswordchg:yes' 以結束代碼 $lasterrorcode 完成。可能未成功。"
                     }
                 } catch {
-                    Write-Error "    [FAIL] Failed to flag user '$($user.Name)'. Error: $($_.Exception.Message)"
+                    Write-Error "    [失敗] 標記使用者 '$($user.Name)' 失敗。錯誤: $($_.Exception.Message)"
                 }
             }
         }
     } catch {
-        # Catch errors from Get-LocalUser specifically if command not found etc.
-         if ($_.Exception.CommandNotFound) {
-            Write-Error "Failed to execute 'Get-LocalUser'. This cmdlet requires PowerShell 5.1 or newer. Cannot flag users."
-        } else {
-            Write-Error "Failed to retrieve local users or run 'net user' command. Error: $($_.Exception.Message)"
-        }
-        Write-Warning "Skipping the forced password change section due to error."
+        Write-Error "擷取本機使用者或執行 'net user' 指令失敗。錯誤: $($_.Exception.Message)"
+        Write-Warning "由於錯誤，正在跳過強制變更密碼區段。"
     }
 } else {
-    Write-Host "`nSkipping the step to force password change for non-admins as requested." -ForegroundColor Cyan
+    Write-Host "`n依照要求，正在跳過強制非系統管理員變更密碼的步驟。" -ForegroundColor Cyan
 }
 
 
-# --- Automatic Updates (Information Only) ---
-Write-Host "`nSkipping configuration of automatic updates..."
-Write-Host "Note: Forcing specific Automatic Update behavior via registry policies is unreliable on Windows Home." -ForegroundColor Yellow
-Write-Host "Recommend managing update settings via the Windows Settings app (Settings > Windows Update)." -ForegroundColor Cyan
+# --- 自動更新 (僅供參考) ---
+Write-Host "`n正在跳過自動更新的設定..."
+Write-Host "注意: 在家用版上透過登錄檔強制執行特定的自動更新行為是不可靠的。" -ForegroundColor Yellow
+Write-Host "建議透過 Windows 設定應用程式 (設定 > Windows Update) 管理更新設定。" -ForegroundColor Cyan
 
 
-# --- Screen Saver (For Current User Only) ---
-Write-Host "`nConfiguring screen saver for the *current user* ($env:USERNAME)..."
+# --- 螢幕保護裝置 (僅限目前使用者) ---
+Write-Host "`n正在為 *目前使用者* ($env:USERNAME) 設定螢幕保護裝置..."
 $controlPanelDesktopPath = "HKCU:\Control Panel\Desktop"
 $expectedScreenSaverActive = "1"
 $expectedScreenSaverSecure = "1"
@@ -168,23 +162,23 @@ try {
     if (!(Test-Path $controlPanelDesktopPath)) {
         New-Item -Path $controlPanelDesktopPath -Force -ErrorAction Stop | Out-Null
     }
-    Write-Verbose "Setting ScreenSaver executable to $expectedScreenSaverExe"
+    Write-Verbose "正在設定螢幕保護裝置執行檔為 $expectedScreenSaverExe"
     Set-ItemProperty -Path $controlPanelDesktopPath -Name SCRNSAVE.EXE -Value $expectedScreenSaverExe -ErrorAction Stop
-    Write-Verbose "Enabling Screen Saver Active flag"
+    Write-Verbose "正在啟用螢幕保護裝置使用中旗標"
     Set-ItemProperty -Path $controlPanelDesktopPath -Name ScreenSaveActive -Value $expectedScreenSaverActive -ErrorAction Stop
-    Write-Verbose "Setting Screen Saver Timeout to $expectedScreenSaverTimeoutString seconds"
+    Write-Verbose "正在設定螢幕保護裝置逾時為 $expectedScreenSaverTimeoutString 秒"
     Set-ItemProperty -Path $controlPanelDesktopPath -Name ScreenSaverTimeout -Value $expectedScreenSaverTimeoutString -ErrorAction Stop
-    Write-Verbose "Setting Screen Saver Secure flag (require password)"
+    Write-Verbose "正在設定螢幕保護裝置安全旗標 (需要密碼)"
     Set-ItemProperty -Path $controlPanelDesktopPath -Name ScreenSaverIsSecure -Value $expectedScreenSaverSecure -ErrorAction Stop
-    Write-Host "Screen saver configured for user '$($env:USERNAME)' with a $expectedScreenSaverTimeoutString second timeout and password requirement." -ForegroundColor Green
+    Write-Host "已為使用者 '$($env:USERNAME)' 設定螢幕保護裝置，逾時 $expectedScreenSaverTimeoutString 秒並要求密碼。" -ForegroundColor Green
 } catch {
-    Write-Error "Failed to configure screen saver for user '$($env:USERNAME)'. Error: $($_.Exception.Message)"
+    Write-Error "為使用者 '$($env:USERNAME)' 設定螢幕保護裝置失敗。錯誤: $($_.Exception.Message)"
 }
 
 
 # =============================================
-# --- End of Configuration ---
+# --- 設定結束 ---
 # =============================================
 
-Write-Host "`nConfiguration script finished." -ForegroundColor Yellow
-# End of Script
+Write-Host "`n設定腳本已完成。" -ForegroundColor Yellow
+# 腳本結束
