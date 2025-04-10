@@ -1,102 +1,60 @@
 # PowerShell script to verify security policies and settings.
 
+# --- Function to Check Registry Value ---
+function Check-RegistryValue {
+    param(
+        [string]$path,
+        [string]$name,
+        [string]$friendlyName,
+        [string]$expectedValue,
+        [scriptblock]$valueTransform = {$_.Value} # Default: return the raw value
+    )
+
+    try {
+        $value = Get-ItemProperty -Path $path -Name $name -ErrorAction Stop
+        $actualValue = &$valueTransform $value
+        Write-Host "$friendlyName: $($actualValue)"
+    } catch {
+        Write-Warning "$friendlyName setting not found. Check registry path or key name."
+        Write-Verbose "Error: $($_.Exception.Message)" -Verbose
+        # List available properties for debugging
+        if (Test-Path $path) {
+          Get-ItemProperty -Path $path | Select-Object * -ExcludeProperty PSPath,PSParentPath,PSChildName,PSDrive,PSProvider | Format-List | Out-String | Write-Host
+        }
+    }
+}
+
+# --- Configuration Variables ---
+$DisableUsbStorage = $true
+$MinPasswordLength = 16
+$MaxPasswordAge = 180
+
 # --- Check USB Storage ---
 Write-Host "Checking USB storage configuration..."
 $usbStorPath = "HKLM:\SYSTEM\CurrentControlSet\Services\UsbStor"
-$usbStorageStatus = Get-ItemProperty -Path $usbStorPath -Name Start -ErrorAction SilentlyContinue
-if ($usbStorageStatus) {
-    if ($usbStorageStatus.Start -eq 4) {
-        Write-Host "USB storage is disabled (Start value is 4)."
-    } else {
-        Write-Host "USB storage is NOT disabled (Start value is $($usbStorageStatus.Start))."
-    }
-} else {
-    Write-Host "USB storage configuration not found. Check if the policy was applied."
-}
+Check-RegistryValue -Path $usbStorPath -Name "Start" -friendlyName "USB Storage Start Value" -expectedValue 4
 
 # --- Check Password Policies (Direct Registry Check) ---
 Write-Host "Checking password policies..."
 $lsaPath = "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa"
 
-try {
-    $minPasswordLength = Get-ItemProperty -Path $lsaPath -Name "MinimumPasswordLength" -ErrorAction Stop
-    Write-Host "Minimum password length is set to: $($minPasswordLength.MinimumPasswordLength)"
-} catch {
-    Write-Warning "Minimum password length not found. Check if the policy was applied."
-}
+Check-RegistryValue -Path $lsaPath -Name "MinimumPasswordLength" -friendlyName "Minimum Password Length" -expectedValue $MinPasswordLength
 
-try {
-    $passwordComplexity = Get-ItemProperty -Path $lsaPath -Name "PasswordComplexity" -ErrorAction Stop
-    if ($passwordComplexity.PasswordComplexity -eq 1) {
-        Write-Host "Password complexity is enabled."
-    } else {
-        Write-Host "Password complexity is NOT enabled."
-    }
-} catch {
-    Write-Warning "Password complexity setting not found. Check if the policy was applied."
-}
+Check-RegistryValue -Path $lsaPath -Name "PasswordComplexity" -friendlyName "Password Complexity" -expectedValue 1 -valueTransform {$_.PasswordComplexity}
 
-try {
-    $maxPasswordAge = Get-ItemProperty -Path $lsaPath -Name "MaxPasswordAge" -ErrorAction Stop
-    $maxPasswordAgeDays = [math]::Round($maxPasswordAge.MaxPasswordAge / (24 * 60 * 60))
-    Write-Host "Maximum password age is set to: $($maxPasswordAgeDays) days"
-} catch {
-    Write-Warning "Maximum password age setting not found. Check if the policy was applied."
-}
+Check-RegistryValue -Path $lsaPath -Name "MaxPasswordAge" -friendlyName "Maximum Password Age" -expectedValue ($MaxPasswordAge * 24 * 60 * 60) -valueTransform { [math]::Round($_.MaxPasswordAge / (24 * 60 * 60)) }
 
 # --- Check Automatic Updates ---
 Write-Host "Checking automatic updates configuration..."
 $auPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU"
-$auOptions = Get-ItemProperty -Path $auPath -Name AUOptions -ErrorAction SilentlyContinue
-$noAutoReboot = Get-ItemProperty -Path $auPath -Name NoAutoRebootWithLoggedOnUsers -ErrorAction SilentlyContinue
-
-if ($auOptions) {
-    if ($auOptions.AUOptions -eq 4) {
-        Write-Host "Automatic updates are configured to auto download and install (AUOptions = 4)."
-    } else {
-        Write-Host "Automatic updates are NOT configured to auto download and install (AUOptions = $($auOptions.AUOptions))."
-    }
-} else {
-    Write-Host "Automatic updates configuration (AUOptions) not found. Check if the policy was applied."
-}
-
-if ($noAutoReboot) {
-    if ($noAutoReboot.NoAutoRebootWithLoggedOnUsers -eq 1) {
-        Write-Host "Automatic reboot with logged-on users is prevented (NoAutoRebootWithLoggedOnUsers = 1)."
-    } else {
-        Write-Host "Automatic reboot with logged-on users is NOT prevented (NoAutoRebootWithLoggedOnUsers = $($noAutoReboot.NoAutoRebootWithLoggedOnUsers))."
-    }
-} else {
-    Write-Host "Automatic reboot configuration (NoAutoRebootWithLoggedOnUsers) not found. Check if the policy was applied."
-}
+Check-RegistryValue -Path $auPath -Name "AUOptions" -friendlyName "Automatic Updates Options" -expectedValue 4
+Check-RegistryValue -Path $auPath -Name "NoAutoRebootWithLoggedOnUsers" -friendlyName "No Auto Reboot With LoggedOn Users" -expectedValue 1
 
 # --- Check Screen Saver ---
 Write-Host "Checking screen saver configuration..."
 $controlPanelDesktopPath = "HKCU:\Control Panel\Desktop"
-$screenSaveActive = Get-ItemProperty -Path $controlPanelDesktopPath -Name ScreenSaveActive -ErrorAction SilentlyContinue
-$screenSaverTimeout = Get-ItemProperty -Path $controlPanelDesktopPath -Name ScreenSaverTimeout -ErrorAction SilentlyContinue
-$scrnsaveExe = Get-ItemProperty -Path $controlPanelDesktopPath -Name SCRNSAVE.EXE -ErrorAction SilentlyContinue
-
-if ($screenSaveActive) {
-    if ($screenSaveActive.ScreenSaveActive -eq 1) {
-        Write-Host "Screen saver is enabled."
-    } else {
-        Write-Host "Screen saver is NOT enabled."
-    }
-} else {
-    Write-Host "Screen saver (ScreenSaveActive) setting not found. Check if the policy was applied."
-}
-
-if ($screenSaverTimeout) {
-    Write-Host "Screen saver timeout is set to: $($screenSaverTimeout.ScreenSaverTimeout / 60) minutes"
-} else {
-    Write-Host "Screen saver timeout setting not found. Check if the policy was applied."
-}
-
-if ($scrnsaveExe) {
-    Write-Host "Screen saver executable is set to: $($scrnsaveExe.SCRNSAVE.EXE)"
-} else {
-    Write-Host "Screen saver executable (SCRNSAVE.EXE) setting not found. Check if the policy was applied."
-}
+Check-RegistryValue -Path $controlPanelDesktopPath -Name "ScreenSaveActive" -friendlyName "Screen Saver Active" -expectedValue 1
+Check-RegistryValue -Path $controlPanelDesktopPath -Name "ScreenSaverTimeout" -friendlyName "Screen Saver Timeout" -expectedValue $ScreenSaverTimeout
+Check-RegistryValue -Path $controlPanelDesktopPath -Name "SCRNSAVE.EXE" -friendlyName "Screen Saver Executable" -expectedValue "%SystemRoot%\system32\scrnsave.scr"
 
 Write-Host "Verification complete."
