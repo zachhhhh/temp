@@ -86,14 +86,28 @@ try {
     }
 }
 
-# --- Force Password Change for Non-Compliant Users ---
+# --- Force Password Change for Non-Compliant Users (Fallback for older PowerShell) ---
 Write-Log "Checking and enforcing password changes for users..."
 try {
-    $users = Get-LocalUser | Where-Object { $_.Enabled -eq $true }
-    foreach ($user in $users) {
-        # Force password change at next login
-        Set-LocalUser -Name $user.Name -PasswordNeverExpires $false -PasswordChangeRequired $true -ErrorAction Stop
-        Write-Log "User $($user.Name): Password change required at next login."
+    # Check PowerShell version and use appropriate method
+    if ($PSVersionTable.PSVersion.Major -ge 5) {
+        # PowerShell 5.1+ (Windows 10/Server 2016+)
+        $users = Get-LocalUser | Where-Object { $_.Enabled -eq $true }
+        foreach ($user in $users) {
+            Set-LocalUser -Name $user.Name -PasswordNeverExpires $false -PasswordChangeRequired $true -ErrorAction Stop
+            Write-Log "User $($user.Name): Password change required at next login."
+        }
+    } else {
+        # Older PowerShell (e.g., Windows 7/Server 2008) using net user
+        $users = net user | Where-Object { $_ -match "^[a-zA-Z0-9]" } | ForEach-Object { $_.Trim().Split()[0] }
+        foreach ($user in $users) {
+            # Skip built-in accounts if desired
+            if ($user -notin @("Administrator", "Guest")) {
+                net user $user /expires:never | Out-Null
+                net user $user /pwdreq:yes | Out-Null
+                Write-Log "User $user: Password change required at next login (via net user)."
+            }
+        }
     }
 } catch {
     Write-Log "Failed to enforce password changes: $($_.Exception.Message)" "WARNING"
@@ -126,19 +140,26 @@ try {
 # --- Screen Saver ---
 Write-Log "Configuring screen saver..."
 $controlPanelDesktopPath = "HKCU:\Control Panel\Desktop"
-$screenSaverPath = "$env:SystemRoot\system32\logon.scr"
+$screenSaverPath = "$env:SystemRoot\system32\scrnsave.scr" # Fallback to scrnsave.scr if logon.scr is missing
 
 try {
     Set-ItemProperty -Path $controlPanelDesktopPath -Name ScreenSaveActive -Value 1 -ErrorAction Stop
     Set-ItemProperty -Path $controlPanelDesktopPath -Name ScreenSaveTimeOut -Value $ScreenSaverTimeout -ErrorAction Stop
     Set-ItemProperty -Path $controlPanelDesktopPath -Name ScreenSaverIsSecure -Value 1 -ErrorAction Stop
+
+    # Check for logon.scr first, fallback to scrnsave.scr
+    if (Test-Path "$env:SystemRoot\system32\logon.scr") {
+        $screenSaverPath = "$env:SystemRoot\system32\logon.scr"
+        Write-Log "Using logon.scr as screen saver."
+    } elseif (Test-Path "$env:SystemRoot\system32\scrnsave.scr") {
+        $screenSaverPath = "$env:SystemRoot\system32\scrnsave.scr"
+        Write-Log "logon.scr not found; falling back to scrnsave.scr."
+    } else {
+        Write-Log "No suitable screen saver found; settings applied but may not function." "WARNING"
+    }
     Set-ItemProperty -Path $controlPanelDesktopPath -Name SCRNSAVE.EXE -Value $screenSaverPath -ErrorAction Stop
 
-    if (Test-Path $screenSaverPath) {
-        Write-Log "Screen saver enabled with a $([math]::Round($ScreenSaverTimeout / 60, 2)) minute timeout and password protection."
-    } else {
-        Write-Log "Screen saver not found at $screenSaverPath; using fallback configuration." "WARNING"
-    }
+    Write-Log "Screen saver enabled with a $([math]::Round($ScreenSaverTimeout / 60, 2)) minute timeout and password protection."
 } catch {
     Write-Log "Failed to configure screen saver: $($_.Exception.Message)" "WARNING"
 }
