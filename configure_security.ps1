@@ -1,272 +1,190 @@
-<#
-.SYNOPSIS
-Configures and verifies security settings on Windows 11 Home, with zh-TW support.
-.NOTES
-Version: 1.7
-Author: Enhanced by Grok (xAI)
-Date: 2025-04-10
-Requires: PowerShell 5.1+ (Windows 11 default), RunAsAdministrator
-#>
-
 #Requires -RunAsAdministrator
 
+<#
+.SYNOPSIS
+Configures security and preference settings on Windows 11 Home, optionally enforcing password changes.
+.DESCRIPTION
+This script attempts to configure the following on Windows 11 Home:
+- Disable USB mass storage devices (System-wide).
+- Set basic password policies using 'net accounts' (System-wide, limited options on Home).
+- Optionally flags all standard local users to change their password at next logon.
+- Configure screen saver settings for the *current user* running the script.
+.NOTES
+Version: 1.6
+Author: Gemini AI (Modified from user input)
+Date: 2025-04-10
+
+IMPORTANT: It's recommended to save this script file with UTF-8 with BOM encoding if using non-English characters in comments or strings.
+
+IMPORTANT WINDOWS HOME LIMITATIONS:
+- Full password policies (like complexity) cannot be enforced via script on Windows Home.
+- Group Policy registry keys (like those for Automatic Updates) are not reliably supported on Windows Home.
+- Settings applied to HKCU (Screen Saver) only affect the user running the script.
+- Forced password change flags ALL non-built-in-admin users, regardless of current password compliance.
+- Requires PowerShell 5.1+ for Get-LocalUser cmdlet.
+#>
+
+# --- Configuration Variables ---
 [CmdletBinding()]
 param (
+    [Parameter(Mandatory=$false)]
     [bool]$DisableUsbStorage = $true,
-    [ValidateRange(0, 14)][int]$MinPasswordLength = 12,
-    [ValidateRange(1, 999)][int]$MaxPasswordAge = 90,
-    [ValidateRange(60, 3600)][int]$ScreenSaverTimeoutSeconds = 600,
-    [string]$ScreenSaverExecutable = "$env:SystemRoot\System32\scrnsave.scr",
-    [bool]$EnforcePasswordChangeOnNonAdmins = $true
+
+    [Parameter(Mandatory=$false)]
+    [int]$MinPasswordLength = 12,
+
+    [Parameter(Mandatory=$false)]
+    [int]$MaxPasswordAge = 90,
+
+    [Parameter(Mandatory=$false)]
+    [int]$ScreenSaverTimeoutSeconds = 600, # 10 minutes
+
+    [Parameter(Mandatory=$false)]
+    [string]$ScreenSaverExecutable = "$($env:SystemRoot)\System32\scrnsave.scr",
+
+    [Parameter(Mandatory=$false)]
+    [bool]$EnforcePasswordChangeOnNonAdmins = $true # Set to $false to disable forced change
 )
 
-# --- Setup Logging with UTF-8 ---
-$LogFile = "$env:TEMP\SecurityConfig_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8  # Ensure console handles Chinese
-function Write-Log {
-    param([string]$Message, [string]$Level = "INFO")
-    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    $logMessage = "$timestamp [$Level]: $Message"
-    $color = switch ($Level) { "ERROR" { "Red" } "WARN" { "Yellow" } default { "White" } }
-    Write-Host $logMessage -ForegroundColor $color
-    Add-Content -Path $LogFile -Value $logMessage -Encoding UTF8 -ErrorAction SilentlyContinue
-}
-
-Write-Log "Starting configuration script for Windows 11 Home..."
-Write-Log "Running as user: $env:USERNAME (PowerShell x64)"
-Write-Log "System language: $((Get-Culture).Name)"
+# =============================================
+# --- Configuration Section ---
+# =============================================
+Write-Host "Starting configuration script..." -ForegroundColor Yellow
+Write-Host "Running as user: $($env:USERNAME)" -ForegroundColor Gray
+Write-Host "System Time: $(Get-Date)" -ForegroundColor Gray
+Write-Host "System Culture: $(Get-Culture).Name" -ForegroundColor Gray
 
 # --- Disable USB Storage ---
-Write-Log "Configuring USB storage (system-wide)..."
+Write-Host "`nConfiguring USB storage..."
 $usbStorPath = "HKLM:\SYSTEM\CurrentControlSet\Services\UsbStor"
-$expectedUsbStorStartValue = if ($DisableUsbStorage) { 4 } else { 3 }
+$expectedUsbStorStartValue = if ($DisableUsbStorage) { 4 } else { 3 } # 4 = Disabled, 3 = Enabled (Manual Start)
 
 try {
-    if (-not (Test-Path $usbStorPath)) {
-        Write-Log "USB Storage registry path '$usbStorPath' not found. Skipping." "WARN"
+    if (!(Test-Path $usbStorPath)) {
+        Write-Warning "USB Storage registry path not found: $usbStorPath. Skipping configuration."
     } else {
-        Set-ItemProperty -Path $usbStorPath -Name Start -Value $expectedUsbStorStartValue -Type DWord -Force -ErrorAction Stop
-        Write-Log "USB storage set to $($DisableUsbStorage ? 'disabled' : 'enabled/manual') (Start=$expectedUsbStorStartValue)."
+        Set-ItemProperty -Path $usbStorPath -Name Start -Value $expectedUsbStorStartValue -ErrorAction Stop
+        if ($DisableUsbStorage) {
+            Write-Host "USB storage driver disabled (System-wide)." -ForegroundColor Green
+        } else {
+            Write-Host "USB storage driver set to enabled/manual start (System-wide)." -ForegroundColor Green
+        }
     }
 } catch {
-    Write-Log "Failed to configure USB storage: $($_.Exception.Message)" "ERROR"
+    Write-Error "Failed to configure USB storage. Error: $($_.Exception.Message)"
 }
 
-# --- Password Policies (net accounts) ---
-Write-Log "Configuring password policies via 'net accounts' (system-wide)..."
-Write-Log "Note: Windows 11 Home limits password policy options (no complexity enforcement)." "WARN"
 
+# --- Password Policies (Using net accounts - Limited for Windows Home) ---
+Write-Host "`nConfiguring password policies using 'net accounts'..."
+Write-Host "Note: Password complexity cannot be enforced via 'net accounts' on Windows Home." -ForegroundColor Yellow
+
+# Minimum Password Length
 try {
-    $minOutput = & net.exe accounts /minpwlen:$MinPasswordLength 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        Write-Log "Failed to set minimum password length to $MinPasswordLength: $minOutput (Exit code: $LASTEXITCODE)." "WARN"
+    Write-Verbose "Setting Minimum Password Length to $MinPasswordLength"
+    net accounts /minpwlen:$MinPasswordLength
+    if ($lasterrorcode -ne 0) { # Check exit code
+         Write-Warning "Command 'net accounts /minpwlen' may have encountered an issue (Exit code: $lasterrorcode)."
     } else {
-        Write-Log "Set minimum password length to $MinPasswordLength."
-    }
-
-    $maxOutput = & net.exe accounts /maxpwage:$MaxPasswordAge 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        Write-Log "Failed to set maximum password age to $MaxPasswordAge days: $maxOutput (Exit code: $LASTEXITCODE)." "WARN"
-    } else {
-        Write-Log "Set maximum password age to $MaxPasswordAge days."
+         Write-Host "Attempted to set Minimum password length to: $MinPasswordLength (System-wide)." -ForegroundColor Green
     }
 } catch {
-    Write-Log "Failed to run 'net accounts': $($_.Exception.Message)" "ERROR"
+    Write-Error "Failed to run 'net accounts' for Minimum Password Length. Error: $($_.Exception.Message)"
 }
 
-# --- Force Password Change for Non-Admins ---
+# Maximum Password Age
+try {
+    Write-Verbose "Setting Maximum Password Age to $MaxPasswordAge days"
+    net accounts /maxpwage:$MaxPasswordAge
+    if ($lasterrorcode -ne 0) { # Check exit code
+        Write-Warning "Command 'net accounts /maxpwage' may have encountered an issue (Exit code: $lasterrorcode)."
+    } else {
+        Write-Host "Attempted to set Maximum password age to: $MaxPasswordAge days (System-wide)." -ForegroundColor Green
+    }
+} catch {
+    Write-Error "Failed to run 'net accounts' for Maximum Password Age. Error: $($_.Exception.Message)"
+}
+
+# --- Force Password Change for Non-Admins (Optional) ---
 if ($EnforcePasswordChangeOnNonAdmins) {
-    Write-Log "Flagging non-admin users for password change at next logon..."
-    Write-Log "WARNING: Affects all enabled local users except built-in Administrator (SID *-500)." "WARN"
+    Write-Host "`nAttempting to flag non-administrator users for password change at next logon..." -ForegroundColor Yellow
+    Write-Host "WARNING: This affects ALL enabled local users except the built-in Administrator (SID ending -500)." -ForegroundColor Yellow
 
     try {
-        $users = Get-LocalUser -ErrorAction Stop | Where-Object { $_.Enabled -and $_.SID.Value -notlike '*-500' }
-        if (-not $users) {
-            Write-Log "No eligible users found for password change enforcement."
+        # Get enabled local users, excluding the built-in administrator account (SID typically ends in -500)
+        $usersToFlag = Get-LocalUser -PrincipalSource Local | Where-Object { $_.Enabled -eq $true -and $_.SID.Value -notlike 'S-1-5-*-500' } -ErrorAction Stop
+
+        if ($null -eq $usersToFlag -or $usersToFlag.Count -eq 0) {
+             Write-Host "No applicable user accounts found to flag for password change." -ForegroundColor Green
         } else {
-            foreach ($user in $users) {
-                Write-Log "Processing user: $($user.Name)"
+            # Ensure $usersToFlag is an array even if only one user is found
+            if ($usersToFlag -isnot [array]) { $usersToFlag = @($usersToFlag) }
+
+            foreach ($user in $usersToFlag) {
+                Write-Host "  Attempting to flag user: $($user.Name)"
                 try {
-                    Set-LocalUser -Name $user.Name -PasswordNeverExpires $false -ErrorAction Stop
-                    $netOutput = & net.exe user $user.Name /logonpasswordchg:yes 2>&1
-                    if ($LASTEXITCODE -ne 0) {
-                        Write-Log "Failed to enforce password change for '$($user.Name)' via 'net user': $netOutput (Exit code: $LASTEXITCODE). Using workaround..." "WARN"
-                        $tempPassword = "TempP@ss$(Get-Random)"
-                        & net.exe user $user.Name $tempPassword 2>&1 | Out-Null
-                        if ($LASTEXITCODE -eq 0) {
-                            Write-Log "Set temporary password for '$($user.Name)' to force change at next logon."
-                        } else {
-                            Write-Log "Failed to set temporary password for '$($user.Name)' (Exit code: $LASTEXITCODE)." "ERROR"
-                        }
+                    # Use net user to force password change at next logon
+                    # Enclose username in quotes in case it contains spaces
+                    net user "$($user.Name)" /logonpasswordchg:yes
+                    if ($lasterrorcode -eq 0) {
+                        Write-Host "    [SUCCESS] User '$($user.Name)' flagged to change password at next logon." -ForegroundColor Green
                     } else {
-                        Write-Log "User '$($user.Name)' flagged to change password at next logon."
+                         Write-Warning "    [WARN] Command 'net user ""$($user.Name)"" /logonpasswordchg:yes' finished with exit code $lasterrorcode. May not have succeeded."
                     }
                 } catch {
-                    Write-Log "Failed to process user '$($user.Name)': $($_.Exception.Message)" "ERROR"
+                    Write-Error "    [FAIL] Failed to flag user '$($user.Name)'. Error: $($_.Exception.Message)"
                 }
             }
         }
     } catch {
-        Write-Log "Failed to retrieve local users: $($_.Exception.Message)" "ERROR"
+        # Catch errors from Get-LocalUser specifically if command not found etc.
+         if ($_.Exception.CommandNotFound) {
+            Write-Error "Failed to execute 'Get-LocalUser'. This cmdlet requires PowerShell 5.1 or newer. Cannot flag users."
+        } else {
+            Write-Error "Failed to retrieve local users or run 'net user' command. Error: $($_.Exception.Message)"
+        }
+        Write-Warning "Skipping the forced password change section due to error."
     }
 } else {
-    Write-Log "Skipping password change enforcement."
+    Write-Host "`nSkipping the step to force password change for non-admins as requested." -ForegroundColor Cyan
 }
 
-# --- Automatic Updates ---
-Write-Log "Skipping Automatic Updates configuration..."
-Write-Log "Note: Use Settings > Windows Update for configuration on Windows 11 Home." "WARN"
 
-# --- Screen Saver (Current User) ---
-Write-Log "Configuring screen saver for current user ($env:USERNAME)..."
+# --- Automatic Updates (Information Only) ---
+Write-Host "`nSkipping configuration of automatic updates..."
+Write-Host "Note: Forcing specific Automatic Update behavior via registry policies is unreliable on Windows Home." -ForegroundColor Yellow
+Write-Host "Recommend managing update settings via the Windows Settings app (Settings > Windows Update)." -ForegroundColor Cyan
+
+
+# --- Screen Saver (For Current User Only) ---
+Write-Host "`nConfiguring screen saver for the *current user* ($env:USERNAME)..."
 $controlPanelDesktopPath = "HKCU:\Control Panel\Desktop"
+$expectedScreenSaverActive = "1"
+$expectedScreenSaverSecure = "1"
+$expectedScreenSaverTimeoutString = $ScreenSaverTimeoutSeconds.ToString()
+$expectedScreenSaverExe = $ScreenSaverExecutable
 
 try {
-    if (-not (Test-Path $controlPanelDesktopPath)) {
+    if (!(Test-Path $controlPanelDesktopPath)) {
         New-Item -Path $controlPanelDesktopPath -Force -ErrorAction Stop | Out-Null
     }
-    if (-not (Test-Path $ScreenSaverExecutable)) {
-        Write-Log "Screen saver '$ScreenSaverExecutable' not found. Setting may not work." "WARN"
-    }
-
-    Set-ItemProperty -Path $controlPanelDesktopPath -Name "SCRNSAVE.EXE" -Value $ScreenSaverExecutable -Type String -Force -ErrorAction Stop
-    Set-ItemProperty -Path $controlPanelDesktopPath -Name "ScreenSaveActive" -Value "1" -Type String -Force -ErrorAction Stop
-    Set-ItemProperty -Path $controlPanelDesktopPath -Name "ScreenSaverTimeout" -Value $ScreenSaverTimeoutSeconds -Type String -Force -ErrorAction Stop
-    Set-ItemProperty -Path $controlPanelDesktopPath -Name "ScreenSaverIsSecure" -Value "1" -Type String -Force -ErrorAction Stop
-
-    Write-Log "Screen saver configured: Timeout=$ScreenSaverTimeoutSeconds seconds, Password required."
+    Write-Verbose "Setting ScreenSaver executable to $expectedScreenSaverExe"
+    Set-ItemProperty -Path $controlPanelDesktopPath -Name SCRNSAVE.EXE -Value $expectedScreenSaverExe -ErrorAction Stop
+    Write-Verbose "Enabling Screen Saver Active flag"
+    Set-ItemProperty -Path $controlPanelDesktopPath -Name ScreenSaveActive -Value $expectedScreenSaverActive -ErrorAction Stop
+    Write-Verbose "Setting Screen Saver Timeout to $expectedScreenSaverTimeoutString seconds"
+    Set-ItemProperty -Path $controlPanelDesktopPath -Name ScreenSaverTimeout -Value $expectedScreenSaverTimeoutString -ErrorAction Stop
+    Write-Verbose "Setting Screen Saver Secure flag (require password)"
+    Set-ItemProperty -Path $controlPanelDesktopPath -Name ScreenSaverIsSecure -Value $expectedScreenSaverSecure -ErrorAction Stop
+    Write-Host "Screen saver configured for user '$($env:USERNAME)' with a $expectedScreenSaverTimeoutString second timeout and password requirement." -ForegroundColor Green
 } catch {
-    Write-Log "Failed to configure screen saver: $($_.Exception.Message)" "ERROR"
+    Write-Error "Failed to configure screen saver for user '$($env:USERNAME)'. Error: $($_.Exception.Message)"
 }
 
-# --- Verification ---
-Write-Log "Starting verification..."
-$verificationSuccess = $true
 
-# Verify USB Storage
-Write-Log "Verifying USB storage..."
-try {
-    if (Test-Path $usbStorPath) {
-        $currentUsbStartValue = Get-ItemProperty -Path $usbStorPath -Name Start -ErrorAction Stop | Select-Object -ExpandProperty Start
-        if ($currentUsbStartValue -eq $expectedUsbStorStartValue) {
-            Write-Log "[PASS] USB Storage Start=$currentUsbStartValue (as expected)."
-        } else {
-            Write-Log "[FAIL] USB Storage Start=$currentUsbStartValue (Expected: $expectedUsbStorStartValue)." "ERROR"
-            $verificationSuccess = $false
-        }
-    } else {
-        Write-Log "USB Storage path not found for verification." "WARN"
-    }
-} catch {
-    Write-Log "Failed to verify USB storage: $($_.Exception.Message)" "ERROR"
-}
+# =============================================
+# --- End of Configuration ---
+# =============================================
 
-# Verify Password Policies
-Write-Log "Verifying password policies via 'net accounts'..."
-try {
-    # Ensure UTF-8 capture of output
-    $netAccountsOutput = & net.exe accounts 2>&1 | ForEach-Object { [System.Text.Encoding]::UTF8.GetString([System.Text.Encoding]::Default.GetBytes($_)) }
-    if ($LASTEXITCODE -ne 0) { throw "net accounts failed: $netAccountsOutput" }
-
-    # Log raw output for debugging
-    Write-Log "Raw 'net accounts' output:`n$($netAccountsOutput -join "`n")" "DEBUG"
-
-    # Language-specific parsing for zh-TW
-    $culture = (Get-Culture).Name
-    $currentMinLength = -1
-    $currentMaxAge = -1
-
-    if ($culture -eq "zh-TW") {
-        Write-Log "Parsing for Traditional Chinese (zh-TW)..." "DEBUG"
-        foreach ($line in $netAccountsOutput) {
-            Write-Log "Line: $line" "DEBUG"  # Log each line to trace parsing
-            if ($line -match '密碼最短長度[^\d]*(\d+)') {
-                $currentMinLength = [int]$Matches[1]
-                Write-Log "Parsed Minimum password length: $currentMinLength" "DEBUG"
-            } elseif ($line -match '密碼最短長度[^\d]*無') {
-                $currentMinLength = 0
-                Write-Log "Parsed Minimum password length: 0 (無)" "DEBUG"
-            }
-            if ($line -match '密碼最長有效期\(天\)[^\d]*(\d+)') {
-                $currentMaxAge = [int]$Matches[1]
-                Write-Log "Parsed Maximum password age: $currentMaxAge" "DEBUG"
-            } elseif ($line -match '密碼最長有效期\(天\)[^\d]*無限制') {
-                $currentMaxAge = 99999
-                Write-Log "Parsed Maximum password age: Unlimited (無限制)" "DEBUG"
-            }
-        }
-    } else {
-        # Fallback to English
-        Write-Log "Parsing for English (fallback)..." "DEBUG"
-        foreach ($line in $netAccountsOutput) {
-            if ($line -match '(?i)minimum\s+password\s+length[^\d]*(\d+)') {
-                $currentMinLength = [int]$Matches[1]
-            } elseif ($line -match '(?i)minimum\s+password\s+length[^\d]*none') {
-                $currentMinLength = 0
-            }
-            if ($line -match '(?i)maximum\s+password\s+age[^\d]*(\d+)') {
-                $currentMaxAge = [int]$Matches[1]
-            } elseif ($line -match '(?i)maximum\s+password\s+age[^\d]*unlimited') {
-                $currentMaxAge = 99999
-            }
-        }
-    }
-
-    if ($currentMinLength -eq -1) {
-        Write-Log "[FAIL] Could not parse Minimum password length from 'net accounts' output." "ERROR"
-        $verificationSuccess = $false
-    } elseif ($currentMinLength -ge $MinPasswordLength) {
-        Write-Log "[PASS] Minimum password length=$currentMinLength (meets or exceeds $MinPasswordLength)."
-    } else {
-        Write-Log "[FAIL] Minimum password length=$currentMinLength (below $MinPasswordLength)." "ERROR"
-        $verificationSuccess = $false
-    }
-
-    if ($currentMaxAge -eq -1) {
-        Write-Log "[FAIL] Could not parse Maximum password age from 'net accounts' output." "ERROR"
-        $verificationSuccess = $false
-    } elseif ($currentMaxAge -eq 99999 -and $MaxPasswordAge -lt 999) {
-        Write-Log "[FAIL] Maximum password age=Unlimited (Expected: $MaxPasswordAge days)." "ERROR"
-        $verificationSuccess = $false
-    } elseif ($currentMaxAge -le $MaxPasswordAge) {
-        Write-Log "[PASS] Maximum password age=$currentMaxAge days (meets or below $MaxPasswordAge)."
-    } else {
-        Write-Log "[FAIL] Maximum password age=$currentMaxAge days (Expected: $MaxPasswordAge or less)." "ERROR"
-        $verificationSuccess = $false
-    }
-} catch {
-    Write-Log "Failed to verify password policies: $($_.Exception.Message)" "ERROR"
-}
-
-# Verify Screen Saver
-Write-Log "Verifying screen saver for current user ($env:USERNAME)..."
-try {
-    $props = Get-ItemProperty -Path $controlPanelDesktopPath -ErrorAction Stop
-    $ssVerified = $true
-
-    if ($props.ScreenSaveActive -eq "1") { Write-Log "[PASS] ScreenSaveActive=1" }
-    else { Write-Log "[FAIL] ScreenSaveActive=$($props.ScreenSaveActive) (Expected: 1)" "ERROR"; $ssVerified = $false }
-
-    if ($props.ScreenSaverTimeout -eq $ScreenSaverTimeoutSeconds.ToString()) { Write-Log "[PASS] ScreenSaverTimeout=$($props.ScreenSaverTimeout) seconds" }
-    else { Write-Log "[FAIL] ScreenSaverTimeout=$($props.ScreenSaverTimeout) (Expected: $ScreenSaverTimeoutSeconds)" "ERROR"; $ssVerified = $false }
-
-    if ($props.'SCRNSAVE.EXE' -eq $ScreenSaverExecutable) { Write-Log "[PASS] SCRNSAVE.EXE=$($props.'SCRNSAVE.EXE')" }
-    else { Write-Log "[FAIL] SCRNSAVE.EXE=$($props.'SCRNSAVE.EXE') (Expected: $ScreenSaverExecutable)" "ERROR"; $ssVerified = $false }
-
-    if ($props.ScreenSaverIsSecure -eq "1") { Write-Log "[PASS] ScreenSaverIsSecure=1" }
-    else { Write-Log "[FAIL] ScreenSaverIsSecure=$($props.ScreenSaverIsSecure) (Expected: 1)" "ERROR"; $ssVerified = $false }
-
-    if (-not $ssVerified) { $verificationSuccess = $false }
-} catch {
-    Write-Log "Failed to verify screen saver: $($_.Exception.Message)" "ERROR"
-}
-
-# --- Summary ---
-Write-Log "--- Verification Summary ---"
-if ($verificationSuccess) {
-    Write-Log "All verifiable settings configured correctly (within Windows 11 Home limits)."
-} else {
-    Write-Log "One or more settings failed verification. See [FAIL] messages above." "ERROR"
-}
-Write-Log "Log file: $LogFile"
-Write-Log "Script completed."
+Write-Host "`nConfiguration script finished." -ForegroundColor Yellow
+# End of Script
