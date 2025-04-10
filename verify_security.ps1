@@ -1,77 +1,85 @@
-# PowerShell script to verify security policies and settings.
-
-# --- Function to Extract Secedit Values ---
-function Get-SeceditValue {
-    param(
-        [string]$cfgPath,
-        [string[]]$patterns
-    )
-
-    $results = @{}
-    $content = Get-Content $cfgPath -ErrorAction SilentlyContinue
-    if ($content) {
-        foreach ($pattern in $patterns) {
-            $line = $content | Select-String -Pattern $pattern
-            if ($line) {
-                $parts = $line -split "="
-                if ($parts.Length -ge 2) {
-                    $key = ($parts[0]).Trim()
-                    $value = ($parts[1]).Trim()
-                    $results[$key] = $value
-                }
-            }
-        }
-    }
-    return $results
-}
+# PowerShell script to configure security policies and settings.
 
 # --- Configuration Variables ---
-$tempCfgPath = "$env:TEMP\temp.cfg"
+$DisableUsbStorage = $true
+$MinPasswordLength = 16
+$MaxPasswordAge = 180
+$ScreenSaverTimeout = 300 # 5 minutes in seconds
 
-# --- Password Policies (Using secedit) ---
-Write-Host "Checking password policies..."
+# --- Disable USB Storage ---
+Write-Host "Configuring USB storage..."
+$usbStorPath = "HKLM:\SYSTEM\CurrentControlSet\Services\UsbStor"
 
 try {
-    secedit /export /cfg "$tempCfgPath" -Quiet -Force  # Use -Quiet and -Force
-    $passwordSettings = Get-SeceditValue -cfgPath "$tempCfgPath" -patterns @(
-        "MinimumPasswordLength",
-        "PasswordComplexity",
-        "MaximumPasswordAge"
-    )
-
-    if ($passwordSettings["MinimumPasswordLength"]) {
-        Write-Host "Minimum password length is set to: $($passwordSettings['MinimumPasswordLength'])"
+    Set-ItemProperty -Path $usbStorPath -Name Start -Value 4 -ErrorAction Stop
+    if ($DisableUsbStorage) {
+        Write-Host "USB storage disabled."
     } else {
-        Write-Host "Minimum password length not found. Possible keys:"
-        $passwordSettings.Keys | ForEach-Object { Write-Host "- $_" }
-        Write-Host "Check if the policy was applied or if the key name is different."
+        Write-Host "USB Storage Disable variable is set to false, therefore USB storage will not be disabled."
     }
+} catch {
+    Write-Warning "Failed to configure USB storage: $($_.Exception.Message)"
+}
 
-    if ($passwordSettings["PasswordComplexity"]) {
-        if ($passwordSettings["PasswordComplexity"].Trim() -eq "1") {
-            Write-Host "Password complexity is enabled."
-        } else {
-            Write-Host "Password complexity is NOT enabled."
-        }
-    } else {
-        Write-Host "Password complexity setting not found. Possible keys:"
-        $passwordSettings.Keys | ForEach-Object { Write-Host "- $_" }
-        Write-Host "Check if the policy was applied or if the key name is different."
-    }
+# --- Password Policies (Direct Registry Manipulation) ---
+Write-Host "Configuring password policies..."
 
-    if ($passwordSettings["MaximumPasswordAge"]) {
-        Write-Host "Maximum password age is set to: $($passwordSettings['MaximumPasswordAge']) days"
-    } else {
-        Write-Host "Maximum password age setting not found. Possible keys:"
-        $passwordSettings.Keys | ForEach-Object { Write-Host "- $_" }
-        Write-Host "Check if the policy was applied or if the key name is different."
-    }
+try {
+    # Minimum Password Length
+    $minPwdPath = "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa"
+    Set-ItemProperty -Path $minPwdPath -Name "MinimumPasswordLength" -Value $MinPasswordLength -Force -ErrorAction Stop
+    Write-Host "Minimum password length set to: $MinPasswordLength"
+
+    # Password Complexity
+    $complexityPath = "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa"
+    Set-ItemProperty -Path $complexityPath -Name "restrictanonymous" -Value 0 -Force -ErrorAction Stop
+    Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" -Name "everyoneincludesanonymous" -Value 0 -Force -ErrorAction Stop
+    Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" -Name "NoLmHosts" -Value 1 -Force -ErrorAction Stop
+    Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" -Name "LmCompatibilityLevel" -Value 5 -Force -ErrorAction Stop
+    Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" -Name "PasswordComplexity" -Value 1 -Force -ErrorAction Stop
+    Write-Host "Password complexity enabled."
+
+    # Maximum Password Age
+    $maxPwdAgePath = "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa"
+    Set-ItemProperty -Path $maxPwdAgePath -Name "MaxPasswordAge" -Value ($MaxPasswordAge * 24 * 60 * 60) -Force -ErrorAction Stop # Convert days to seconds
+    Write-Host "Maximum password age set to: $MaxPasswordAge days"
 
 } catch {
     Write-Warning "Failed to configure password policies: $($_.Exception.Message)"
-} finally {
-    if (Test-Path $tempCfgPath) { Remove-Item $tempCfgPath -Force }
 }
 
-# --- Rest of the script (USB, Updates, Screen Saver checks) remains the same ---
-# ... (as the previous improved version)
+# --- Automatic Updates ---
+Write-Host "Configuring automatic updates..."
+$auPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU"
+
+try {
+    if (-not (Test-Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate")) {
+        New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" -Force | Out-Null
+    }
+    if (-not (Test-Path $auPath)) {
+        New-Item -Path $auPath -Force | Out-Null
+    }
+
+    Set-ItemProperty -Path $auPath -Name AUOptions -Value 4 -Force -ErrorAction Stop # Auto download and install
+    Set-ItemProperty -Path $auPath -Name NoAutoRebootWithLoggedOnUsers -Value 1 -Force -ErrorAction Stop # Prevents automatic reboot if users are logged on.
+    Write-Host "Automatic updates configured."
+
+} catch {
+    Write-Warning "Failed to configure automatic updates: $($_.Exception.Message)"
+}
+
+# --- Screen Saver ---
+Write-Host "Configuring screen saver..."
+$controlPanelDesktopPath = "HKCU:\Control Panel\Desktop"
+
+try {
+    Set-ItemProperty -Path $controlPanelDesktopPath -Name ScreenSaveActive -Value 1 -Force -ErrorAction Stop
+    Set-ItemProperty -Path $controlPanelDesktopPath -Name ScreenSaverTimeout -Value $ScreenSaverTimeout -Force -ErrorAction Stop
+    Set-ItemProperty -Path $controlPanelDesktopPath -Name SCRNSAVE.EXE -Value "%SystemRoot%\system32\scrnsave.scr" -Force -ErrorAction Stop # Default screen saver
+    Write-Host "Screen saver enabled with a $($ScreenSaverTimeout / 60) minute timeout."
+
+} catch {
+    Write-Warning "Failed to configure screen saver: $($_.Exception.Message)"
+}
+
+Write-Host "Configuration complete."
