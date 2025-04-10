@@ -4,16 +4,11 @@
 
 #Right click script property to unlock before execution
 
-
-
-
-
-
 #存以下script為configure_security.ps1
 #用admin執行
 #.\configure_security.ps1
 
-# PowerShell script to disable USB storage, enforce password policies, enable automatic updates, and screen saver.
+# PowerShell script to configure security policies and settings.
 
 # --- Configuration Variables ---
 $DisableUsbStorage = $true
@@ -25,46 +20,77 @@ $ScreenSaverTimeout = 300 # 5 minutes in seconds
 Write-Host "Configuring USB storage..."
 $usbStorPath = "HKLM:\SYSTEM\CurrentControlSet\Services\UsbStor"
 
-if ($DisableUsbStorage) {
-    Set-ItemProperty -Path $usbStorPath -Name Start -Value 4
-    Write-Host "USB storage disabled."
-} else {
-    Write-Host "USB Storage Disable variable is set to false, therefore USB storage will not be disabled."
+try {
+    Set-ItemProperty -Path $usbStorPath -Name Start -Value 4 -ErrorAction Stop
+    if ($DisableUsbStorage) {
+        Write-Host "USB storage disabled."
+    } else {
+        Write-Host "USB Storage Disable variable is set to false, therefore USB storage will not be disabled."
+    }
+} catch {
+    Write-Warning "Failed to configure USB storage: $($_.Exception.Message)"
 }
 
 # --- Password Policies (Using secedit) ---
 Write-Host "Configuring password policies..."
-secedit /export /cfg temp.cfg
-$content = Get-Content temp.cfg
+$tempCfgPath = "$env:TEMP\temp.cfg"
+$tempDbPath = "$env:TEMP\temp.sdb"
 
-# Minimum Password Length & Complexity & Max Age
-$content = $content -replace "MinimumPasswordLength = 0", "MinimumPasswordLength = $MinPasswordLength"
-$content = $content -replace "PasswordComplexity = 0", "PasswordComplexity = 1" # Enable complexity
-$content = $content -replace "MaximumPasswordAge = 0", "MaximumPasswordAge = $MaxPasswordAge"
-$content | Set-Content temp.cfg
+try {
+    secedit /export /cfg "$tempCfgPath"
+    $content = Get-Content "$tempCfgPath"
 
-secedit /configure /db temp.sdb /cfg temp.cfg /areas SECURITYPOLICY
-Remove-Item temp.cfg, temp.sdb
+    # Minimum Password Length & Complexity & Max Age
+    $content = $content -replace "MinimumPasswordLength = \d+", "MinimumPasswordLength = $MinPasswordLength"
+    $content = $content -replace "PasswordComplexity = \d+", "PasswordComplexity = 1" # Enable complexity
+    $content = $content -replace "MaximumPasswordAge = \d+", "MaximumPasswordAge = $MaxPasswordAge"
+    $content | Set-Content "$tempCfgPath"
 
-Write-Host "Minimum password length set to: $MinPasswordLength"
-Write-Host "Password complexity enabled."
-Write-Host "Maximum password age set to: $MaxPasswordAge days"
+    secedit /configure /db "$tempDbPath" /cfg "$tempCfgPath" /areas SECURITYPOLICY
+
+    Write-Host "Minimum password length set to: $MinPasswordLength"
+    Write-Host "Password complexity enabled."
+    Write-Host "Maximum password age set to: $MaxPasswordAge days"
+
+} catch {
+    Write-Warning "Failed to configure password policies: $($_.Exception.Message)"
+} finally {
+    if (Test-Path $tempCfgPath) { Remove-Item $tempCfgPath }
+    if (Test-Path $tempDbPath) { Remove-Item $tempDbPath }
+}
 
 # --- Automatic Updates ---
 Write-Host "Configuring automatic updates..."
 $auPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU"
-New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" -Force | Out-Null
-New-Item -Path $auPath -Force | Out-Null
-Set-ItemProperty -Path $auPath -Name AUOptions -Value 4 # Auto download and install
-Set-ItemProperty -Path $auPath -Name NoAutoRebootWithLoggedOnUsers -Value 1 # Prevents automatic reboot if users are logged in.
-Write-Host "Automatic updates configured."
+
+try {
+    if (-not (Test-Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate")) {
+        New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" -Force | Out-Null
+    }
+    if (-not (Test-Path $auPath)) {
+        New-Item -Path $auPath -Force | Out-Null
+    }
+
+    Set-ItemProperty -Path $auPath -Name AUOptions -Value 4 -ErrorAction Stop # Auto download and install
+    Set-ItemProperty -Path $auPath -Name NoAutoRebootWithLoggedOnUsers -Value 1 -ErrorAction Stop # Prevents automatic reboot if users are logged in.
+    Write-Host "Automatic updates configured."
+
+} catch {
+    Write-Warning "Failed to configure automatic updates: $($_.Exception.Message)"
+}
 
 # --- Screen Saver ---
 Write-Host "Configuring screen saver..."
 $controlPanelDesktopPath = "HKCU:\Control Panel\Desktop"
-Set-ItemProperty -Path $controlPanelDesktopPath -Name ScreenSaveActive -Value 1
-Set-ItemProperty -Path $controlPanelDesktopPath -Name ScreenSaverTimeout -Value $ScreenSaverTimeout
-Set-ItemProperty -Path $controlPanelDesktopPath -Name SCRNSAVE.EXE -Value "%SystemRoot%\system32\scrnsave.scr" # Default screen saver
-Write-Host "Screen saver enabled with a $ScreenSaverTimeout second timeout."
+
+try {
+    Set-ItemProperty -Path $controlPanelDesktopPath -Name ScreenSaveActive -Value 1 -ErrorAction Stop
+    Set-ItemProperty -Path $controlPanelDesktopPath -Name ScreenSaverTimeout -Value $ScreenSaverTimeout -ErrorAction Stop
+    Set-ItemProperty -Path $controlPanelDesktopPath -Name SCRNSAVE.EXE -Value "%SystemRoot%\system32\scrnsave.scr" -ErrorAction Stop # Default screen saver
+    Write-Host "Screen saver enabled with a $($ScreenSaverTimeout / 60) minute timeout."
+
+} catch {
+    Write-Warning "Failed to configure screen saver: $($_.Exception.Message)"
+}
 
 Write-Host "Configuration complete."
