@@ -1,3 +1,12 @@
+#Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
+
+#Set-ExecutionPolicy -ExecutionPolicy Undefined -Scope CurrentUser
+
+
+
+
+
+
 #存以下script為configure_security.ps1
 #用admin執行
 .\configure_security.ps1
