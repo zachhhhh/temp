@@ -1,13 +1,3 @@
-#Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
-
-#Set-ExecutionPolicy -ExecutionPolicy Undefined -Scope CurrentUser
-
-#Right click script property to unlock before execution
-
-#存以下script為configure_security.ps1
-#用admin執行
-#.\configure_security.ps1
-
 # PowerShell script to configure security policies and settings.
 
 # --- Configuration Variables ---
@@ -58,20 +48,29 @@ $tempCfgPath = "$env:TEMP\temp.cfg"
 $tempDbPath = "$env:TEMP\temp.sdb"
 
 try {
-    # Export current security policy
     secedit /export /cfg $tempCfgPath /quiet
     if (-not (Test-Path $tempCfgPath)) {
         throw "Failed to export security policy configuration."
     }
 
-    # Modify settings
-    $content = Get-Content $tempCfgPath
-    $content = $content -replace "MinimumPasswordLength = \d+", "MinimumPasswordLength = $MinPasswordLength"
-    $content = $content -replace "PasswordComplexity = \d+", "PasswordComplexity = 1" # Enable complexity
-    $content = $content -replace "MaximumPasswordAge = \d+", "MaximumPasswordAge = $MaxPasswordAge"
+    $content = Get-Content $tempCfgPath -Raw
+    if ($content -match "MinimumPasswordLength = (\d+)") {
+        $content = $content -replace "MinimumPasswordLength = \d+", "MinimumPasswordLength = $MinPasswordLength"
+    } else {
+        $content += "`nMinimumPasswordLength = $MinPasswordLength"
+    }
+    if ($content -match "PasswordComplexity = (\d+)") {
+        $content = $content -replace "PasswordComplexity = \d+", "PasswordComplexity = 1"
+    } else {
+        $content += "`nPasswordComplexity = 1"
+    }
+    if ($content -match "MaximumPasswordAge = (\d+)") {
+        $content = $content -replace "MaximumPasswordAge = \d+", "MaximumPasswordAge = $MaxPasswordAge"
+    } else {
+        $content += "`nMaximumPasswordAge = $MaxPasswordAge"
+    }
     $content | Set-Content $tempCfgPath -ErrorAction Stop
 
-    # Apply updated policy
     secedit /configure /db $tempDbPath /cfg $tempCfgPath /areas SECURITYPOLICY /quiet
     Write-Log "Minimum password length set to: $MinPasswordLength"
     Write-Log "Password complexity enabled."
@@ -87,6 +86,19 @@ try {
     }
 }
 
+# --- Force Password Change for Non-Compliant Users ---
+Write-Log "Checking and enforcing password changes for users..."
+try {
+    $users = Get-LocalUser | Where-Object { $_.Enabled -eq $true }
+    foreach ($user in $users) {
+        # Force password change at next login
+        Set-LocalUser -Name $user.Name -PasswordNeverExpires $false -PasswordChangeRequired $true -ErrorAction Stop
+        Write-Log "User $($user.Name): Password change required at next login."
+    }
+} catch {
+    Write-Log "Failed to enforce password changes: $($_.Exception.Message)" "WARNING"
+}
+
 # --- Automatic Updates ---
 Write-Log "Configuring automatic updates..."
 $auPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU"
@@ -99,8 +111,8 @@ try {
         New-Item -Path $auPath -Force | Out-Null
     }
 
-    Set-ItemProperty -Path $auPath -Name AUOptions -Value 4 -ErrorAction Stop # Auto download and install
-    Set-ItemProperty -Path $auPath -Name NoAutoRebootWithLoggedOnUsers -Value 1 -ErrorAction Stop # Prevent auto-reboot with users logged in
+    Set-ItemProperty -Path $auPath -Name AUOptions -Value 4 -ErrorAction Stop
+    Set-ItemProperty -Path $auPath -Name NoAutoRebootWithLoggedOnUsers -Value 1 -ErrorAction Stop
     $auOptions = Get-ItemProperty -Path $auPath -Name AUOptions -ErrorAction Stop
     if ($auOptions.AUOptions -eq 4) {
         Write-Log "Automatic updates configured to auto-download and install."
@@ -114,18 +126,18 @@ try {
 # --- Screen Saver ---
 Write-Log "Configuring screen saver..."
 $controlPanelDesktopPath = "HKCU:\Control Panel\Desktop"
-$screenSaverPath = "$env:SystemRoot\system32\scrnsave.scr"
+$screenSaverPath = "$env:SystemRoot\system32\logon.scr"
 
 try {
     Set-ItemProperty -Path $controlPanelDesktopPath -Name ScreenSaveActive -Value 1 -ErrorAction Stop
-    Set-ItemProperty -Path $controlPanelDesktopPath -Name ScreenSaverTimeout -Value $ScreenSaverTimeout -ErrorAction Stop
-    Set-ItemProperty -Path $controlPanelDesktopPath -Name ScreenSaverIsSecure -Value 1 -ErrorAction Stop # Require password on resume
+    Set-ItemProperty -Path $controlPanelDesktopPath -Name ScreenSaveTimeOut -Value $ScreenSaverTimeout -ErrorAction Stop
+    Set-ItemProperty -Path $controlPanelDesktopPath -Name ScreenSaverIsSecure -Value 1 -ErrorAction Stop
+    Set-ItemProperty -Path $controlPanelDesktopPath -Name SCRNSAVE.EXE -Value $screenSaverPath -ErrorAction Stop
 
     if (Test-Path $screenSaverPath) {
-        Set-ItemProperty -Path $controlPanelDesktopPath -Name SCRNSAVE.EXE -Value $screenSaverPath -ErrorAction Stop
         Write-Log "Screen saver enabled with a $([math]::Round($ScreenSaverTimeout / 60, 2)) minute timeout and password protection."
     } else {
-        Write-Log "Default screen saver not found at $screenSaverPath; screen saver may not work as expected." "WARNING"
+        Write-Log "Screen saver not found at $screenSaverPath; using fallback configuration." "WARNING"
     }
 } catch {
     Write-Log "Failed to configure screen saver: $($_.Exception.Message)" "WARNING"
@@ -148,30 +160,41 @@ try {
     Write-Log "Verification Failed: Could not check USB storage setting: $($_.Exception.Message)" "WARNING"
 }
 
-# Verify Password Policies (re-export and check)
+# Verify Password Policies
 try {
     $verifyCfgPath = "$env:TEMP\verify_temp.cfg"
     secedit /export /cfg $verifyCfgPath /quiet
     if (Test-Path $verifyCfgPath) {
-        $verifyContent = Get-Content $verifyCfgPath
-        $minLengthMatch = $verifyContent | Where-Object { $_ -match "MinimumPasswordLength = (\d+)" }
-        $complexityMatch = $verifyContent | Where-Object { $_ -match "PasswordComplexity = (\d+)" }
-        $maxAgeMatch = $verifyContent | Where-Object { $_ -match "MaximumPasswordAge = (\d+)" }
-
-        if ($minLengthMatch -and $Matches[1] -eq $MinPasswordLength) {
-            Write-Log "Verification: Minimum password length is correctly set to $MinPasswordLength."
+        $verifyContent = Get-Content $verifyCfgPath -Raw
+        if ($verifyContent -match "MinimumPasswordLength = (\d+)") {
+            $minLength = [int]$Matches[1]
+            if ($minLength -eq $MinPasswordLength) {
+                Write-Log "Verification: Minimum password length is correctly set to $MinPasswordLength."
+            } else {
+                Write-Log "Verification Failed: Minimum password length is set to $minLength, expected $MinPasswordLength." "WARNING"
+            }
         } else {
-            Write-Log "Verification Failed: Minimum password length is not set to $MinPasswordLength." "WARNING"
+            Write-Log "Verification Failed: Minimum password length not found in policy." "WARNING"
         }
-        if ($complexityMatch -and $Matches[1] -eq 1) {
-            Write-Log "Verification: Password complexity is correctly enabled."
+        if ($verifyContent -match "PasswordComplexity = (\d+)") {
+            $complexity = [int]$Matches[1]
+            if ($complexity -eq 1) {
+                Write-Log "Verification: Password complexity is correctly enabled."
+            } else {
+                Write-Log "Verification Failed: Password complexity is set to $complexity, expected 1." "WARNING"
+            }
         } else {
-            Write-Log "Verification Failed: Password complexity is not enabled." "WARNING"
+            Write-Log "Verification Failed: Password complexity not found in policy." "WARNING"
         }
-        if ($maxAgeMatch -and $Matches[1] -eq $MaxPasswordAge) {
-            Write-Log "Verification: Maximum password age is correctly set to $MaxPasswordAge days."
+        if ($verifyContent -match "MaximumPasswordAge = (\d+)") {
+            $maxAge = [int]$Matches[1]
+            if ($maxAge -eq $MaxPasswordAge) {
+                Write-Log "Verification: Maximum password age is correctly set to $MaxPasswordAge days."
+            } else {
+                Write-Log "Verification Failed: Maximum password age is set to $maxAge, expected $MaxPasswordAge." "WARNING"
+            }
         } else {
-            Write-Log "Verification Failed: Maximum password age is not set to $MaxPasswordAge days." "WARNING"
+            Write-Log "Verification Failed: Maximum password age not found in policy." "WARNING"
         }
         Remove-Item $verifyCfgPath -ErrorAction SilentlyContinue
     } else {
@@ -206,7 +229,7 @@ try {
     } else {
         Write-Log "Verification Failed: Screen saver is not enabled." "WARNING"
     }
-    if ($screenSaverValues.ScreenSaverTimeout -eq $ScreenSaverTimeout) {
+    if ($screenSaverValues.ScreenSaveTimeOut -eq $ScreenSaverTimeout) {
         Write-Log "Verification: Screen saver timeout is correctly set to $([math]::Round($ScreenSaverTimeout / 60, 2)) minutes."
     } else {
         Write-Log "Verification Failed: Screen saver timeout is not set to $ScreenSaverTimeout seconds." "WARNING"
@@ -216,10 +239,10 @@ try {
     } else {
         Write-Log "Verification Failed: Screen saver password protection is not enabled." "WARNING"
     }
-    if ($screenSaverValues.SCRNSAVE_EXE -eq $screenSaverPath -and (Test-Path $screenSaverPath)) {
+    if ($screenSaverValues.'SCRNSAVE.EXE' -eq $screenSaverPath -and (Test-Path $screenSaverPath)) {
         Write-Log "Verification: Screen saver executable is correctly set to $screenSaverPath."
     } else {
-        Write-Log "Verification Failed: Screen saver executable is not set correctly or file is missing." "WARNING"
+        Write-Log "Verification Failed: Screen saver executable is not set to $screenSaverPath or file is missing." "WARNING"
     }
 } catch {
     Write-Log "Verification Failed: Could not check screen saver settings: $($_.Exception.Message)" "WARNING"
