@@ -1,8 +1,8 @@
 <#
 .SYNOPSIS
-Configures and verifies security settings on Windows 11 Home, optionally enforcing password changes.
+Configures and verifies security settings on Windows 11 Home, with zh-TW support.
 .NOTES
-Version: 1.6
+Version: 1.7
 Author: Enhanced by Grok (xAI)
 Date: 2025-04-10
 Requires: PowerShell 5.1+ (Windows 11 default), RunAsAdministrator
@@ -20,8 +20,9 @@ param (
     [bool]$EnforcePasswordChangeOnNonAdmins = $true
 )
 
-# --- Setup Logging ---
+# --- Setup Logging with UTF-8 ---
 $LogFile = "$env:TEMP\SecurityConfig_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8  # Ensure console handles Chinese
 function Write-Log {
     param([string]$Message, [string]$Level = "INFO")
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
@@ -163,33 +164,40 @@ try {
 # Verify Password Policies
 Write-Log "Verifying password policies via 'net accounts'..."
 try {
-    $netAccountsOutput = & net.exe accounts 2>&1
+    # Ensure UTF-8 capture of output
+    $netAccountsOutput = & net.exe accounts 2>&1 | ForEach-Object { [System.Text.Encoding]::UTF8.GetString([System.Text.Encoding]::Default.GetBytes($_)) }
     if ($LASTEXITCODE -ne 0) { throw "net accounts failed: $netAccountsOutput" }
 
     # Log raw output for debugging
     Write-Log "Raw 'net accounts' output:`n$($netAccountsOutput -join "`n")" "DEBUG"
 
-    # Language-specific parsing
+    # Language-specific parsing for zh-TW
     $culture = (Get-Culture).Name
     $currentMinLength = -1
     $currentMaxAge = -1
 
     if ($culture -eq "zh-TW") {
-        # Traditional Chinese (Taiwan)
+        Write-Log "Parsing for Traditional Chinese (zh-TW)..." "DEBUG"
         foreach ($line in $netAccountsOutput) {
+            Write-Log "Line: $line" "DEBUG"  # Log each line to trace parsing
             if ($line -match '密碼最短長度[^\d]*(\d+)') {
                 $currentMinLength = [int]$Matches[1]
+                Write-Log "Parsed Minimum password length: $currentMinLength" "DEBUG"
             } elseif ($line -match '密碼最短長度[^\d]*無') {
                 $currentMinLength = 0
+                Write-Log "Parsed Minimum password length: 0 (無)" "DEBUG"
             }
             if ($line -match '密碼最長有效期\(天\)[^\d]*(\d+)') {
                 $currentMaxAge = [int]$Matches[1]
+                Write-Log "Parsed Maximum password age: $currentMaxAge" "DEBUG"
             } elseif ($line -match '密碼最長有效期\(天\)[^\d]*無限制') {
                 $currentMaxAge = 99999
+                Write-Log "Parsed Maximum password age: Unlimited (無限制)" "DEBUG"
             }
         }
     } else {
         # Fallback to English
+        Write-Log "Parsing for English (fallback)..." "DEBUG"
         foreach ($line in $netAccountsOutput) {
             if ($line -match '(?i)minimum\s+password\s+length[^\d]*(\d+)') {
                 $currentMinLength = [int]$Matches[1]
