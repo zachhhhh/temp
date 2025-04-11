@@ -1,19 +1,15 @@
 # --- 密碼原則 (使用 net accounts - 家用版有限) ---
-Write-Host "`n正在使用 'net accounts' 設定密碼原則..."
+Write-Host "`n正在使用 'net accounts' 設定密碼原則..." -ForegroundColor Yellow
 Write-Host "注意: 無法在家用版上透過 'net accounts' 強制執行密碼複雜性。" -ForegroundColor Yellow
-
-# 檢查 Windows 版本
-$osEdition = (Get-CimInstance -ClassName Win32_OperatingSystem).OperatingSystemSKU
-if ($osEdition -eq 101) {
-    Write-Warning "偵測到 Windows 11 家用版。某些功能（如密碼複雜性或群組原則）可能無法使用。"
-}
 
 # 最小密碼長度
 try {
+    $MinPasswordLength = [math]::Min($MinPasswordLength, 14) # 限制為 14，Windows Home 的最大值
+    if ($MinPasswordLength -lt 0) { $MinPasswordLength = 0 } # 允許 0（無限制）
     Write-Verbose "正在設定最小密碼長度為 $MinPasswordLength"
     $process = Start-Process -FilePath "net.exe" -ArgumentList "accounts /minpwlen:$MinPasswordLength" -NoNewWindow -PassThru -Wait
     if ($process.ExitCode -ne 0) {
-        Write-Warning "指令 'net accounts /minpwlen' 失敗，結束代碼: $($process.ExitCode)。"
+        Write-Warning "指令 'net accounts /minpwlen:$MinPasswordLength' 失敗，結束代碼: $($process.ExitCode)。請檢查值是否有效（0-14）。"
     } else {
         Write-Host "已設定最小密碼長度為: $MinPasswordLength (系統範圍)。" -ForegroundColor Green
     }
@@ -23,10 +19,11 @@ try {
 
 # 最長密碼有效期
 try {
+    $MaxPasswordAge = [math]::Clamp($MaxPasswordAge, 1, 999) # 限制為 1-999 天
     Write-Verbose "正在設定最長密碼有效期為 $MaxPasswordAge 天"
     $process = Start-Process -FilePath "net.exe" -ArgumentList "accounts /maxpwage:$MaxPasswordAge" -NoNewWindow -PassThru -Wait
     if ($process.ExitCode -ne 0) {
-        Write-Warning "指令 'net accounts /maxpwage' 失敗，結束代碼: $($process.ExitCode)。"
+        Write-Warning "指令 'net accounts /maxpwage:$MaxPasswordAge' 失敗，結束代碼: $($process.ExitCode)。請檢查值是否有效（1-999）。"
     } else {
         Write-Host "已設定最長密碼有效期為: $MaxPasswordAge 天 (系統範圍)。" -ForegroundColor Green
     }
