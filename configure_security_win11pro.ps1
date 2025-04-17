@@ -13,7 +13,7 @@ Requires: PowerShell 5.1+, RunAsAdministrator
 [CmdletBinding()]
 param (
     [bool]$DisableUsbStorage = $true,
-    [ValidateRange(0, 14)][int]$MinPasswordLength = 14, # Default minimum password length is 14
+    [ValidateRange(0, 14)][int]$MinPasswordLength = 15, # Default minimum password length is 14
     [ValidateRange(1, 999)][int]$MaxPasswordAge = 90,
     [ValidateRange(0, 999)][int]$MinPasswordAge = 0, # Default minimum password age is 0
     [ValidateSet('NoRequire', 'Require')][string]$PasswordComplexity = 'Require', # 新增: 密碼複雜度
